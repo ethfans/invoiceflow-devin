@@ -1,0 +1,179 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  VOID
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+}
+
+enum WebhookStatus {
+  RECEIVED
+  PROCESSING
+  PROCESSED
+  FAILED
+}
+
+enum EmailDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum EmailClassification {
+  PAYMENT_QUESTION
+  DISPUTE
+  REMINDER_REPLY
+  OTHER
+  UNCLASSIFIED
+}
+
+enum ReminderStatus {
+  QUEUED
+  SENT
+  FAILED
+  CANCELLED
+}
+
+model User {
+  id        String     @id @default(cuid())
+  email     String     @unique
+  name      String?
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  customers Customer[]
+  invoices  Invoice[]
+  emails    EmailMessage[]
+}
+
+model Customer {
+  id        String    @id @default(cuid())
+  userId    String
+  name      String
+  email     String?
+  company   String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  invoices  Invoice[]
+
+  @@unique([userId, email])
+  @@index([userId, name])
+}
+
+model Invoice {
+  id             String        @id @default(cuid())
+  userId         String
+  customerId     String
+  number         String
+  status         InvoiceStatus @default(DRAFT)
+  currency       String        @default("usd")
+  subtotal       Decimal       @db.Decimal(12, 2)
+  tax            Decimal       @default(0) @db.Decimal(12, 2)
+  total          Decimal       @db.Decimal(12, 2)
+  amountPaid     Decimal       @default(0) @db.Decimal(12, 2)
+  issuedAt       DateTime?
+  dueAt          DateTime?
+  paidAt         DateTime?
+  notes          String?
+  stripeCheckoutSessionId String? @unique
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  customer       Customer      @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  items          InvoiceLineItem[]
+  payments       Payment[]
+  reminders      ReminderLog[]
+
+  @@unique([userId, number])
+  @@index([userId, status, dueAt])
+  @@index([customerId, createdAt])
+}
+
+model InvoiceLineItem {
+  id          String   @id @default(cuid())
+  invoiceId   String
+  description String
+  quantity    Decimal  @db.Decimal(10, 2)
+  unitPrice   Decimal  @db.Decimal(12, 2)
+  amount      Decimal  @db.Decimal(12, 2)
+  invoice     Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+}
+
+model Payment {
+  id                    String        @id @default(cuid())
+  invoiceId             String
+  status                PaymentStatus @default(PENDING)
+  amount                Decimal       @db.Decimal(12, 2)
+  currency              String        @default("usd")
+  stripePaymentIntentId String?       @unique
+  paidAt                DateTime?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+  invoice               Invoice       @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+
+  @@index([invoiceId, status])
+}
+
+model StripeWebhookEvent {
+  id              String        @id @default(cuid())
+  stripeEventId   String        @unique
+  eventType       String
+  status          WebhookStatus @default(RECEIVED)
+  attemptCount    Int           @default(0)
+  lastError       String?
+  receivedAt      DateTime      @default(now())
+  processedAt     DateTime?
+  // Store only the minimum sanitized metadata needed for diagnostics.
+  metadata        Json?
+
+  @@index([status, receivedAt])
+}
+
+model EmailMessage {
+  id             String               @id @default(cuid())
+  userId         String
+  providerId     String?              @unique
+  direction      EmailDirection
+  fromAddress   String
+  toAddress     String
+  subject        String?
+  classification EmailClassification @default(UNCLASSIFIED)
+  // Avoid retaining raw message bodies unless a documented retention policy permits it.
+  sanitizedText  String?
+  receivedAt     DateTime             @default(now())
+  user           User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, classification, receivedAt])
+}
+
+model ReminderLog {
+  id          String         @id @default(cuid())
+  invoiceId   String
+  status      ReminderStatus @default(QUEUED)
+  scheduledAt DateTime
+  sentAt      DateTime?
+  error       String?
+  createdAt   DateTime       @default(now())
+  invoice     Invoice        @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([status, scheduledAt])
+  @@index([invoiceId, createdAt])
+}
